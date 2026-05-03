@@ -73,8 +73,8 @@ jobs:
             -dname "CN=Echo App, OU=Dev, O=Echo, L=City, S=State, C=US" \
             -noprompt
 
-      # ── 9. Inject signing config with Python (no fragile sed) ──────────────
-      - name: Inject signing config into build.gradle
+      # ── 9. Patch build.gradle: signing config + Kotlin dedup ───────────────
+      - name: Patch app/build.gradle
         env:
           KEYSTORE_PASS: ${{ env.KEYSTORE_PASS }}
         run: |
@@ -84,6 +84,7 @@ jobs:
           gradle_path = "android/app/build.gradle"
           kp = os.environ["KEYSTORE_PASS"]
 
+          # -- Signing config block (goes inside android {})
           signing_block = (
               "\n    signingConfigs {\n"
               "        release {\n"
@@ -95,6 +96,7 @@ jobs:
               "    }\n"
           )
 
+          # -- Release buildType (goes inside buildTypes {})
           release_type = (
               "\n        release {\n"
               "            signingConfig signingConfigs.release\n"
@@ -103,11 +105,28 @@ jobs:
               "        }\n"
           )
 
+          # -- Kotlin stdlib dedup (goes inside configurations {}, appended at end of file)
+          kotlin_dedup = (
+              "\nconfigurations.all {\n"
+              "    resolutionStrategy {\n"
+              "        force \"org.jetbrains.kotlin:kotlin-stdlib:1.8.22\"\n"
+              "        force \"org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22\"\n"
+              "        force \"org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22\"\n"
+              "    }\n"
+              "}\n"
+          )
+
           with open(gradle_path) as f:
               src = f.read()
 
+          # Insert signingConfigs inside android { }
           src = re.sub(r'(android\s*\{)', r'\1' + signing_block, src, count=1)
+
+          # Insert release buildType inside buildTypes { }
           src = re.sub(r'(buildTypes\s*\{)', r'\1' + release_type, src, count=1)
+
+          # Append Kotlin dedup block at end of file
+          src = src + kotlin_dedup
 
           with open(gradle_path, "w") as f:
               f.write(src)
