@@ -1,0 +1,122 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Node + Java ─────────────────────────────────────────────────────
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # ── 3. Install Capacitor CLI + Android platform ────────────────────────
+      - name: Install dependencies
+        run: |
+          npm init -y
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+
+      # ── 4. Write capacitor.config.json ─────────────────────────────────────
+      - name: Write Capacitor config
+        run: |
+          cat > capacitor.config.json << 'EOF'
+          {
+            "appId": "com.echo.feedbacktracker",
+            "appName": "Echo",
+            "webDir": "www",
+            "android": {
+              "buildOptions": {
+                "keystorePath": "release.keystore",
+                "keystoreAlias": "echo",
+                "keystorePassword": "${{ secrets.KEYSTORE_PASSWORD }}",
+                "keystoreAliasPassword": "${{ secrets.KEYSTORE_PASSWORD }}"
+              }
+            }
+          }
+          EOF
+
+      # ── 5. Copy index.html into www/ ───────────────────────────────────────
+      - name: Prepare www folder
+        run: |
+          mkdir -p www
+          cp index.html www/index.html
+
+      # ── 6. Add Android platform ────────────────────────────────────────────
+      - name: Add Android platform
+        run: npx cap add android
+
+      # ── 7. Sync web assets into Android project ────────────────────────────
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      # ── 8. Generate a one-time keystore (no stored secret needed!) ─────────
+      #   We derive a deterministic password from the GitHub run ID so the APK
+      #   is always signable in CI without storing a pre-made keystore.
+      #   For production distribution you should replace this with a real
+      #   keystore stored as a repository secret.
+      - name: Generate keystore
+        run: |
+          KEYSTORE_PASS="echo-$(echo $GITHUB_RUN_ID | sha256sum | head -c 24)"
+          echo "KEYSTORE_PASS=$KEYSTORE_PASS" >> $GITHUB_ENV
+
+          keytool -genkeypair \
+            -keystore android/release.keystore \
+            -alias echo \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass "$KEYSTORE_PASS" \
+            -keypass  "$KEYSTORE_PASS" \
+            -dname "CN=Echo App, OU=Dev, O=Echo, L=City, S=State, C=US" \
+            -noprompt
+
+      # ── 9. Write signing config into build.gradle ──────────────────────────
+      - name: Inject signing config into build.gradle
+        run: |
+          GRADLE=android/app/build.gradle
+
+          # Insert signingConfigs block before the existing android { block
+          sed -i "s|android {|signingConfigs {\n    release {\n        storeFile file(\"release.keystore\")\n        storePassword \"$KEYSTORE_PASS\"\n        keyAlias \"echo\"\n        keyPassword \"$KEYSTORE_PASS\"\n    }\n}\nandroid {|" "$GRADLE"
+
+          # Set the release build type to use that signingConfig
+          sed -i "s|buildTypes {|buildTypes {\n        release {\n            signingConfig signingConfigs.release\n            minifyEnabled false\n        }|" "$GRADLE"
+
+      # ── 10. Make Gradle wrapper executable ─────────────────────────────────
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      # ── 11. Build signed release APK ───────────────────────────────────────
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      # ── 12. Rename APK with run number ─────────────────────────────────────
+      - name: Rename APK
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk \
+             dist/echo-v${{ github.run_number }}.apk
+
+      # ── 13. Upload APK as workflow artifact ────────────────────────────────
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: echo-apk-${{ github.run_number }}
+          path: dist/echo-v${{ github.run_number }}.apk
+          retention-days: 30
