@@ -20,11 +20,11 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Set up Java 17
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       # ── 3. Install Capacitor CLI + Android platform ────────────────────────
       - name: Install dependencies
@@ -106,10 +106,7 @@ jobs:
           with open(gradle_path) as f:
               src = f.read()
 
-          # Insert signingConfigs inside android { right after its opening brace
           src = re.sub(r'(android\s*\{)', r'\1' + signing_block, src, count=1)
-
-          # Insert release buildType inside buildTypes {
           src = re.sub(r'(buildTypes\s*\{)', r'\1' + release_type, src, count=1)
 
           with open(gradle_path, "w") as f:
