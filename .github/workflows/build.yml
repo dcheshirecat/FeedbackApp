@@ -26,13 +26,107 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      # ── 3. Install Capacitor CLI + Android platform ────────────────────────
+      # ── 3. Install Capacitor + Python image libs ───────────────────────────
       - name: Install dependencies
         run: |
           npm init -y
           npm install @capacitor/core @capacitor/cli @capacitor/android
+          pip install Pillow --break-system-packages
 
-      # ── 4. Write capacitor.config.json ─────────────────────────────────────
+      # ── 4. Generate app icon with Python ──────────────────────────────────
+      - name: Generate app icon
+        run: |
+          python3 - << 'PYEOF'
+          from PIL import Image, ImageDraw, ImageFont
+          import os, math
+
+          SIZE = 1024
+          RADIUS = 220
+
+          def rounded_rect_mask(size, radius):
+              mask = Image.new("L", (size, size), 0)
+              d = ImageDraw.Draw(mask)
+              r = radius
+              s = size
+              d.rectangle([r, 0, s-r, s], fill=255)
+              d.rectangle([0, r, s, s-r], fill=255)
+              d.ellipse([0, 0, 2*r, 2*r], fill=255)
+              d.ellipse([s-2*r, 0, s, 2*r], fill=255)
+              d.ellipse([0, s-2*r, 2*r, s], fill=255)
+              d.ellipse([s-2*r, s-2*r, s, s], fill=255)
+              return mask
+
+          # Base gradient background
+          base = Image.new("RGBA", (SIZE, SIZE), (0,0,0,0))
+          gd = ImageDraw.Draw(base)
+          for y in range(SIZE):
+              t = y / SIZE
+              r = int(255*(1-t) + 120*t)
+              g = int(80*(1-t)  + 60*t)
+              b = int(160*(1-t) + 230*t)
+              gd.line([(0,y),(SIZE,y)], fill=(r,g,b,255))
+
+          # Apply rounded mask
+          mask = rounded_rect_mask(SIZE, RADIUS)
+          img = Image.new("RGBA", (SIZE, SIZE), (0,0,0,0))
+          img.paste(base, mask=mask)
+
+          draw = ImageDraw.Draw(img)
+
+          # Warm glow overlay top-left
+          glow = Image.new("RGBA", (SIZE, SIZE), (0,0,0,0))
+          gd2 = ImageDraw.Draw(glow)
+          for i in range(200):
+              a = int(90 * (1 - i/200))
+              gd2.ellipse([-i*2, -i*2, SIZE//2+i, SIZE//2+i], fill=(255,200,80,a))
+          glow_masked = Image.new("RGBA", (SIZE, SIZE), (0,0,0,0))
+          glow_masked.paste(glow, mask=mask)
+          img = Image.alpha_composite(img, glow_masked)
+          draw = ImageDraw.Draw(img)
+
+          # Ripple rings
+          cx, cy = SIZE//2, SIZE//2 + 40
+          for radius, alpha, width in [(310,35,3),(230,55,4),(155,80,5),(88,110,7)]:
+              for w in range(width):
+                  draw.ellipse([cx-radius-w, cy-radius-w, cx+radius+w, cy+radius+w],
+                               outline=(255,255,255,alpha))
+
+          # Center dot
+          for r2, a2 in [(50,80),(38,160),(26,255)]:
+              draw.ellipse([cx-r2,cy-r2,cx+r2,cy+r2], fill=(255,255,255,a2))
+
+          # Text
+          for font_path in [
+              "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+              "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+          ]:
+              try:
+                  font = ImageFont.truetype(font_path, 190)
+                  small = ImageFont.truetype(font_path.replace("Bold",""), 54)
+                  break
+              except:
+                  font = small = ImageFont.load_default()
+
+          text = "echo"
+          bb = draw.textbbox((0,0), text, font=font)
+          tx = (SIZE-(bb[2]-bb[0]))//2 - bb[0]
+          ty = 155
+          draw.text((tx+5, ty+5), text, font=font, fill=(0,0,0,55))
+          draw.text((tx, ty), text, font=font, fill=(255,255,255,248))
+
+          tag = "feedback memory"
+          tb = draw.textbbox((0,0), tag, font=small)
+          draw.text(((SIZE-(tb[2]-tb[0]))//2-tb[0], ty+(bb[3]-bb[1])+22),
+                    tag, font=small, fill=(255,255,255,165))
+
+          os.makedirs("icon_out", exist_ok=True)
+          img.save("icon_out/icon-1024.png")
+          for sz in [512, 192, 144, 96, 72, 48, 36]:
+              img.resize((sz,sz), Image.LANCZOS).save(f"icon_out/icon-{sz}.png")
+          print("Icons OK")
+          PYEOF
+
+      # ── 5. Write capacitor.config.json ─────────────────────────────────────
       - name: Write Capacitor config
         run: |
           cat > capacitor.config.json << 'EOF'
@@ -43,21 +137,45 @@ jobs:
           }
           EOF
 
-      # ── 5. Copy index.html into www/ ───────────────────────────────────────
+      # ── 6. Prepare www/ ────────────────────────────────────────────────────
       - name: Prepare www folder
         run: |
           mkdir -p www
           cp index.html www/index.html
+          cp icon_out/icon-192.png www/icon-192.png
 
-      # ── 6. Add Android platform ────────────────────────────────────────────
+      # ── 7. Add + sync Android platform ────────────────────────────────────
       - name: Add Android platform
         run: npx cap add android
 
-      # ── 7. Sync web assets into Android project ────────────────────────────
       - name: Sync Capacitor
         run: npx cap sync android
 
-      # ── 8. Generate a one-time keystore ────────────────────────────────────
+      # ── 8. Copy icons into Android res folders ─────────────────────────────
+      - name: Copy icons into Android res
+        run: |
+          python3 - << 'PYEOF'
+          from PIL import Image
+          import os
+
+          sizes = {
+            "mipmap-mdpi":    48,
+            "mipmap-hdpi":    72,
+            "mipmap-xhdpi":   96,
+            "mipmap-xxhdpi":  144,
+            "mipmap-xxxhdpi": 192,
+          }
+          src = Image.open("icon_out/icon-1024.png")
+          base = "android/app/src/main/res"
+          for folder, sz in sizes.items():
+              out_dir = os.path.join(base, folder)
+              os.makedirs(out_dir, exist_ok=True)
+              for name in ["ic_launcher.png", "ic_launcher_round.png"]:
+                  src.resize((sz,sz), Image.LANCZOS).save(os.path.join(out_dir, name))
+          print("Android icons placed OK")
+          PYEOF
+
+      # ── 9. Generate keystore ───────────────────────────────────────────────
       - name: Generate keystore
         run: |
           KEYSTORE_PASS="echo-$(echo $GITHUB_RUN_ID | sha256sum | head -c 24)"
@@ -65,15 +183,12 @@ jobs:
           keytool -genkeypair \
             -keystore android/app/release.keystore \
             -alias echo \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -storepass "$KEYSTORE_PASS" \
-            -keypass  "$KEYSTORE_PASS" \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass "$KEYSTORE_PASS" -keypass "$KEYSTORE_PASS" \
             -dname "CN=Echo App, OU=Dev, O=Echo, L=City, S=State, C=US" \
             -noprompt
 
-      # ── 9. Patch build.gradle: signing config + Kotlin dedup ───────────────
+      # ── 10. Patch build.gradle ─────────────────────────────────────────────
       - name: Patch app/build.gradle
         env:
           KEYSTORE_PASS: ${{ env.KEYSTORE_PASS }}
@@ -84,7 +199,6 @@ jobs:
           gradle_path = "android/app/build.gradle"
           kp = os.environ["KEYSTORE_PASS"]
 
-          # -- Signing config block (goes inside android {})
           signing_block = (
               "\n    signingConfigs {\n"
               "        release {\n"
@@ -95,8 +209,6 @@ jobs:
               "        }\n"
               "    }\n"
           )
-
-          # -- Release buildType (goes inside buildTypes {})
           release_type = (
               "\n        release {\n"
               "            signingConfig signingConfigs.release\n"
@@ -104,8 +216,6 @@ jobs:
               "            shrinkResources false\n"
               "        }\n"
           )
-
-          # -- Kotlin stdlib dedup (goes inside configurations {}, appended at end of file)
           kotlin_dedup = (
               "\nconfigurations.all {\n"
               "    resolutionStrategy {\n"
@@ -119,38 +229,30 @@ jobs:
           with open(gradle_path) as f:
               src = f.read()
 
-          # Insert signingConfigs inside android { }
           src = re.sub(r'(android\s*\{)', r'\1' + signing_block, src, count=1)
-
-          # Insert release buildType inside buildTypes { }
           src = re.sub(r'(buildTypes\s*\{)', r'\1' + release_type, src, count=1)
-
-          # Append Kotlin dedup block at end of file
-          src = src + kotlin_dedup
+          src += kotlin_dedup
 
           with open(gradle_path, "w") as f:
               f.write(src)
-
-          print("Patched build.gradle OK")
+          print("build.gradle patched OK")
           PYEOF
 
-      # ── 10. Make Gradle wrapper executable ─────────────────────────────────
+      # ── 11. Build release APK ──────────────────────────────────────────────
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
-      # ── 11. Build signed release APK ───────────────────────────────────────
       - name: Build release APK
         working-directory: android
         run: ./gradlew assembleRelease --no-daemon --stacktrace
 
-      # ── 12. Rename APK with run number ─────────────────────────────────────
-      - name: Rename APK
+      # ── 12. Upload artifact ────────────────────────────────────────────────
+      - name: Rename and stage APK
         run: |
           mkdir -p dist
           cp android/app/build/outputs/apk/release/app-release.apk \
              dist/echo-v${{ github.run_number }}.apk
 
-      # ── 13. Upload APK as workflow artifact ────────────────────────────────
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
