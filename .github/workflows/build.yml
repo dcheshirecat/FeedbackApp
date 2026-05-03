@@ -39,15 +39,7 @@ jobs:
           {
             "appId": "com.echo.feedbacktracker",
             "appName": "Echo",
-            "webDir": "www",
-            "android": {
-              "buildOptions": {
-                "keystorePath": "release.keystore",
-                "keystoreAlias": "echo",
-                "keystorePassword": "${{ secrets.KEYSTORE_PASSWORD }}",
-                "keystoreAliasPassword": "${{ secrets.KEYSTORE_PASSWORD }}"
-              }
-            }
+            "webDir": "www"
           }
           EOF
 
@@ -65,18 +57,13 @@ jobs:
       - name: Sync Capacitor
         run: npx cap sync android
 
-      # ── 8. Generate a one-time keystore (no stored secret needed!) ─────────
-      #   We derive a deterministic password from the GitHub run ID so the APK
-      #   is always signable in CI without storing a pre-made keystore.
-      #   For production distribution you should replace this with a real
-      #   keystore stored as a repository secret.
+      # ── 8. Generate a one-time keystore ────────────────────────────────────
       - name: Generate keystore
         run: |
           KEYSTORE_PASS="echo-$(echo $GITHUB_RUN_ID | sha256sum | head -c 24)"
           echo "KEYSTORE_PASS=$KEYSTORE_PASS" >> $GITHUB_ENV
-
           keytool -genkeypair \
-            -keystore android/release.keystore \
+            -keystore android/app/release.keystore \
             -alias echo \
             -keyalg RSA \
             -keysize 2048 \
@@ -86,16 +73,50 @@ jobs:
             -dname "CN=Echo App, OU=Dev, O=Echo, L=City, S=State, C=US" \
             -noprompt
 
-      # ── 9. Write signing config into build.gradle ──────────────────────────
+      # ── 9. Inject signing config with Python (no fragile sed) ──────────────
       - name: Inject signing config into build.gradle
+        env:
+          KEYSTORE_PASS: ${{ env.KEYSTORE_PASS }}
         run: |
-          GRADLE=android/app/build.gradle
+          python3 - << 'PYEOF'
+          import os, re
 
-          # Insert signingConfigs block before the existing android { block
-          sed -i "s|android {|signingConfigs {\n    release {\n        storeFile file(\"release.keystore\")\n        storePassword \"$KEYSTORE_PASS\"\n        keyAlias \"echo\"\n        keyPassword \"$KEYSTORE_PASS\"\n    }\n}\nandroid {|" "$GRADLE"
+          gradle_path = "android/app/build.gradle"
+          kp = os.environ["KEYSTORE_PASS"]
 
-          # Set the release build type to use that signingConfig
-          sed -i "s|buildTypes {|buildTypes {\n        release {\n            signingConfig signingConfigs.release\n            minifyEnabled false\n        }|" "$GRADLE"
+          signing_block = (
+              "\n    signingConfigs {\n"
+              "        release {\n"
+              "            storeFile file(\"release.keystore\")\n"
+              f"            storePassword \"{kp}\"\n"
+              "            keyAlias \"echo\"\n"
+              f"            keyPassword \"{kp}\"\n"
+              "        }\n"
+              "    }\n"
+          )
+
+          release_type = (
+              "\n        release {\n"
+              "            signingConfig signingConfigs.release\n"
+              "            minifyEnabled false\n"
+              "            shrinkResources false\n"
+              "        }\n"
+          )
+
+          with open(gradle_path) as f:
+              src = f.read()
+
+          # Insert signingConfigs inside android { right after its opening brace
+          src = re.sub(r'(android\s*\{)', r'\1' + signing_block, src, count=1)
+
+          # Insert release buildType inside buildTypes {
+          src = re.sub(r'(buildTypes\s*\{)', r'\1' + release_type, src, count=1)
+
+          with open(gradle_path, "w") as f:
+              f.write(src)
+
+          print("Patched build.gradle OK")
+          PYEOF
 
       # ── 10. Make Gradle wrapper executable ─────────────────────────────────
       - name: Make gradlew executable
