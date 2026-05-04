@@ -26,28 +26,28 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      # ── 3. Install Capacitor + Python image libs ───────────────────────────
+      # ── 3. Install Capacitor + local notifications plugin ──────────────────
       - name: Install dependencies
         run: |
           npm init -y
           npm install @capacitor/core @capacitor/cli @capacitor/android
+          npm install @capacitor/local-notifications
           pip install Pillow --break-system-packages
 
-      # ── 4. Generate app icon with Python ──────────────────────────────────
+      # ── 4. Generate app icon ───────────────────────────────────────────────
       - name: Generate app icon
         run: |
           python3 - << 'PYEOF'
           from PIL import Image, ImageDraw, ImageFont
-          import os, math
+          import os
 
           SIZE = 1024
           RADIUS = 220
 
-          def rounded_rect_mask(size, radius):
+          def rounded_mask(size, radius):
               mask = Image.new("L", (size, size), 0)
               d = ImageDraw.Draw(mask)
-              r = radius
-              s = size
+              r, s = radius, size
               d.rectangle([r, 0, s-r, s], fill=255)
               d.rectangle([0, r, s, s-r], fill=255)
               d.ellipse([0, 0, 2*r, 2*r], fill=255)
@@ -56,53 +56,35 @@ jobs:
               d.ellipse([s-2*r, s-2*r, s, s], fill=255)
               return mask
 
-          # Base gradient background
           base = Image.new("RGBA", (SIZE, SIZE), (0,0,0,0))
           gd = ImageDraw.Draw(base)
           for y in range(SIZE):
               t = y / SIZE
-              r = int(255*(1-t) + 120*t)
-              g = int(80*(1-t)  + 60*t)
-              b = int(160*(1-t) + 230*t)
+              r = int(255*(1-t) + 108*t)
+              g = int(61*(1-t)  + 59*t)
+              b = int(139*(1-t) + 255*t)
               gd.line([(0,y),(SIZE,y)], fill=(r,g,b,255))
 
-          # Apply rounded mask
-          mask = rounded_rect_mask(SIZE, RADIUS)
+          mask = rounded_mask(SIZE, RADIUS)
           img = Image.new("RGBA", (SIZE, SIZE), (0,0,0,0))
           img.paste(base, mask=mask)
 
           draw = ImageDraw.Draw(img)
-
-          # Warm glow overlay top-left
-          glow = Image.new("RGBA", (SIZE, SIZE), (0,0,0,0))
-          gd2 = ImageDraw.Draw(glow)
-          for i in range(200):
-              a = int(90 * (1 - i/200))
-              gd2.ellipse([-i*2, -i*2, SIZE//2+i, SIZE//2+i], fill=(255,200,80,a))
-          glow_masked = Image.new("RGBA", (SIZE, SIZE), (0,0,0,0))
-          glow_masked.paste(glow, mask=mask)
-          img = Image.alpha_composite(img, glow_masked)
-          draw = ImageDraw.Draw(img)
-
-          # Ripple rings
           cx, cy = SIZE//2, SIZE//2 + 40
-          for radius, alpha, width in [(310,35,3),(230,55,4),(155,80,5),(88,110,7)]:
+          for radius, alpha, width in [(310,30,3),(230,50,4),(155,75,5),(88,105,7)]:
               for w in range(width):
                   draw.ellipse([cx-radius-w, cy-radius-w, cx+radius+w, cy+radius+w],
                                outline=(255,255,255,alpha))
-
-          # Center dot
-          for r2, a2 in [(50,80),(38,160),(26,255)]:
+          for r2, a2 in [(48,70),(36,150),(24,255)]:
               draw.ellipse([cx-r2,cy-r2,cx+r2,cy+r2], fill=(255,255,255,a2))
 
-          # Text
           for font_path in [
               "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
               "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
           ]:
               try:
-                  font = ImageFont.truetype(font_path, 190)
-                  small = ImageFont.truetype(font_path.replace("Bold",""), 54)
+                  font = ImageFont.truetype(font_path, 185)
+                  small = ImageFont.truetype(font_path, 52)
                   break
               except:
                   font = small = ImageFont.load_default()
@@ -110,20 +92,20 @@ jobs:
           text = "echo"
           bb = draw.textbbox((0,0), text, font=font)
           tx = (SIZE-(bb[2]-bb[0]))//2 - bb[0]
-          ty = 155
-          draw.text((tx+5, ty+5), text, font=font, fill=(0,0,0,55))
-          draw.text((tx, ty), text, font=font, fill=(255,255,255,248))
+          ty = 160
+          draw.text((tx+5, ty+5), text, font=font, fill=(0,0,0,50))
+          draw.text((tx, ty), text, font=font, fill=(255,255,255,245))
 
           tag = "feedback memory"
           tb = draw.textbbox((0,0), tag, font=small)
-          draw.text(((SIZE-(tb[2]-tb[0]))//2-tb[0], ty+(bb[3]-bb[1])+22),
-                    tag, font=small, fill=(255,255,255,165))
+          draw.text(((SIZE-(tb[2]-tb[0]))//2-tb[0], ty+(bb[3]-bb[1])+20),
+                    tag, font=small, fill=(255,255,255,160))
 
           os.makedirs("icon_out", exist_ok=True)
           img.save("icon_out/icon-1024.png")
           for sz in [512, 192, 144, 96, 72, 48, 36]:
               img.resize((sz,sz), Image.LANCZOS).save(f"icon_out/icon-{sz}.png")
-          print("Icons OK")
+          print("Icons generated OK")
           PYEOF
 
       # ── 5. Write capacitor.config.json ─────────────────────────────────────
@@ -133,7 +115,14 @@ jobs:
           {
             "appId": "com.echo.feedbacktracker",
             "appName": "Echo",
-            "webDir": "www"
+            "webDir": "www",
+            "plugins": {
+              "LocalNotifications": {
+                "smallIcon": "ic_stat_icon_config_sample",
+                "iconColor": "#ff3d8b",
+                "sound": "beep.wav"
+              }
+            }
           }
           EOF
 
@@ -175,20 +164,45 @@ jobs:
           print("Android icons placed OK")
           PYEOF
 
-      # ── 9. Generate keystore ───────────────────────────────────────────────
+      # ── 9. Add notification permission to AndroidManifest ──────────────────
+      - name: Patch AndroidManifest for notifications
+        run: |
+          python3 - << 'PYEOF'
+          import re
+
+          manifest_path = "android/app/src/main/AndroidManifest.xml"
+          with open(manifest_path) as f:
+              src = f.read()
+
+          permissions = [
+              '<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>',
+              '<uses-permission android:name="android.permission.VIBRATE"/>',
+              '<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>',
+              '<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>',
+          ]
+
+          for perm in permissions:
+              if perm not in src:
+                  src = src.replace('<application', perm + '\n    <application', 1)
+
+          with open(manifest_path, "w") as f:
+              f.write(src)
+          print("AndroidManifest patched OK")
+          PYEOF
+
+      # ── 10. Generate keystore ──────────────────────────────────────────────
       - name: Generate keystore
         run: |
           KEYSTORE_PASS="echo-$(echo $GITHUB_RUN_ID | sha256sum | head -c 24)"
           echo "KEYSTORE_PASS=$KEYSTORE_PASS" >> $GITHUB_ENV
           keytool -genkeypair \
             -keystore android/app/release.keystore \
-            -alias echo \
-            -keyalg RSA -keysize 2048 -validity 10000 \
+            -alias echo -keyalg RSA -keysize 2048 -validity 10000 \
             -storepass "$KEYSTORE_PASS" -keypass "$KEYSTORE_PASS" \
             -dname "CN=Echo App, OU=Dev, O=Echo, L=City, S=State, C=US" \
             -noprompt
 
-      # ── 10. Patch build.gradle ─────────────────────────────────────────────
+      # ── 11. Patch build.gradle ─────────────────────────────────────────────
       - name: Patch app/build.gradle
         env:
           KEYSTORE_PASS: ${{ env.KEYSTORE_PASS }}
@@ -238,7 +252,7 @@ jobs:
           print("build.gradle patched OK")
           PYEOF
 
-      # ── 11. Build release APK ──────────────────────────────────────────────
+      # ── 12. Build release APK ──────────────────────────────────────────────
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
@@ -246,8 +260,8 @@ jobs:
         working-directory: android
         run: ./gradlew assembleRelease --no-daemon --stacktrace
 
-      # ── 12. Upload artifact ────────────────────────────────────────────────
-      - name: Rename and stage APK
+      # ── 13. Upload artifact ────────────────────────────────────────────────
+      - name: Stage APK
         run: |
           mkdir -p dist
           cp android/app/build/outputs/apk/release/app-release.apk \
